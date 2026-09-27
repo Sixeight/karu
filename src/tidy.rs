@@ -68,27 +68,24 @@ pub fn run(opts: Options) -> Result<()> {
     }
 
     eprintln!();
-    if delete_count > 0 && !opts.yes && !apply::confirm(delete_count)? {
-        // declined as a group; the asked ones are still worth a look each
-        for item in &mut judged {
-            if item.verdict.kind == VerdictKind::Delete {
-                item.verdict.kind = VerdictKind::Keep;
+    if interact::terminal::is_available() {
+        if ask_count > 0 || (delete_count > 0 && !opts.yes) {
+            interact::terminal::select_candidates(
+                &collected.root,
+                &collected.default_branch,
+                &mut judged,
+                !opts.yes,
+            )?;
+        }
+    } else {
+        if delete_count > 0 && !opts.yes && !apply::confirm(delete_count)? {
+            for item in &mut judged {
+                if item.verdict.kind == VerdictKind::Delete {
+                    item.verdict.kind = VerdictKind::Keep;
+                }
             }
         }
-    }
-
-    if ask_count > 0 {
-        if interact::terminal::is_available() {
-            apply::confirm_asks(&mut judged, |item, index, total| {
-                interact::terminal::ask_one(
-                    &collected.root,
-                    &collected.default_branch,
-                    item,
-                    index,
-                    total,
-                )
-            })?;
-        } else {
+        if ask_count > 0 {
             let mut input = std::io::stdin().lock();
             let mut out = std::io::stderr();
             apply::confirm_asks(&mut judged, |item, index, total| {

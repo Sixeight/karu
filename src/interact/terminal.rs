@@ -11,6 +11,8 @@ use super::{
 use crate::candidate::Judged;
 use crate::report::paint;
 
+mod selector;
+
 const MIN_ROWS: u16 = 12;
 const MIN_COLS: u16 = 40;
 
@@ -21,6 +23,15 @@ pub fn is_available() -> bool {
         && Term::stderr()
             .size_checked()
             .is_some_and(|(rows, cols)| rows >= MIN_ROWS && cols >= MIN_COLS)
+}
+
+pub fn select_candidates(
+    root: &Path,
+    default_branch: &str,
+    judged: &mut [Judged],
+    include_recommendations: bool,
+) -> Result<()> {
+    selector::select_candidates(root, default_branch, judged, include_recommendations)
 }
 
 struct Prompt {

@@ -1,13 +1,28 @@
-use console::Style;
+use console::{Style, Term, measure_text_width, strip_ansi_codes, truncate_str};
 
 use crate::candidate::{Judged, Source, VerdictKind};
 use crate::reason::Reason;
 
 pub fn print_table(items: &[Judged]) {
-    eprint!(
-        "{}",
-        render_table_with(items, console::colors_enabled_stderr())
-    );
+    let color = console::colors_enabled_stderr();
+    let table = render_table_with(items, color);
+    let output = if let Some((_, cols)) = Term::stderr().size_checked() {
+        let width = usize::from(cols).saturating_sub(1);
+        if table_fits(&table, width) {
+            table
+        } else {
+            render_compact_with(items, width, color)
+        }
+    } else {
+        table
+    };
+    eprint!("{output}");
+}
+
+fn table_fits(table: &str, width: usize) -> bool {
+    table
+        .lines()
+        .all(|line| measure_text_width(&strip_ansi_codes(line)) <= width)
 }
 
 #[cfg(test)]
@@ -71,6 +86,106 @@ pub fn render_table_with(items: &[Judged], color: bool) -> String {
         ));
     }
     out
+}
+
+fn render_compact_with(items: &[Judged], width: usize, color: bool) -> String {
+    let mut rows: Vec<&Judged> = items
+        .iter()
+        .filter(|item| !item.candidate.is_head)
+        .collect();
+    rows.sort_by_cached_key(|item| sort_key(item));
+
+    let mut out = String::new();
+    for item in rows {
+        let palette = Palette::for_item(item);
+        let verdict = verdict_label(item.verdict.kind);
+        let heading_prefix = format!(" {verdict}  ");
+        let name_width = width
+            .saturating_sub(measure_text_width(&heading_prefix))
+            .max(1);
+        let display_name = display_name(item);
+        let name = truncate_str(&display_name, name_width, "…");
+        out.push(' ');
+        out.push_str(&paint(verdict, &palette.verdict, color));
+        out.push_str("  ");
+        out.push_str(&name);
+        out.push('\n');
+
+        let c = &item.candidate;
+        let mut details = vec![
+            format!("why: {}", why_label(item)),
+            format!("{} unique", unique_label(item)),
+            format!("idle: {}", idle_label(item)),
+            format!("worktree: {}", nonempty_or_dash(wt_label(item))),
+        ];
+        if c.upstream_gone {
+            details.push("remote: gone".into());
+        }
+        let pr = pr_label(item);
+        if !pr.is_empty() {
+            details.push(format!("PR: {pr}"));
+        }
+        append_wrapped_line(&mut out, &details.join(" · "), width, "   ");
+
+        if let Some(subject) = c
+            .last_subject
+            .as_deref()
+            .filter(|subject| !subject.is_empty())
+        {
+            append_wrapped_line(
+                &mut out,
+                &format!("last commit: {}", truncate(subject, 40)),
+                width,
+                "   ",
+            );
+        }
+    }
+    out
+}
+
+fn append_wrapped_line(out: &mut String, text: &str, width: usize, indent: &str) {
+    let width = width.max(1);
+    let continuation = format!("{indent}  ");
+    let mut line = indent.to_string();
+    let mut columns = measure_text_width(indent);
+    let mut has_text = false;
+
+    for word in text.split_whitespace() {
+        let space_width = usize::from(has_text);
+        let word_width = measure_text_width(word);
+        if has_text && columns + space_width + word_width > width {
+            out.push_str(&line);
+            out.push('\n');
+            line = continuation.clone();
+            columns = measure_text_width(&line);
+            has_text = false;
+        }
+        if has_text {
+            line.push(' ');
+            columns += 1;
+        }
+        for ch in word.chars() {
+            let char_width = measure_text_width(&ch.to_string());
+            if columns + char_width > width && has_text {
+                out.push_str(&line);
+                out.push('\n');
+                line = continuation.clone();
+                columns = measure_text_width(&line);
+            }
+            line.push(ch);
+            columns += char_width;
+            has_text = true;
+        }
+    }
+
+    if !line.trim().is_empty() {
+        out.push_str(&line);
+        out.push('\n');
+    }
+}
+
+fn nonempty_or_dash(value: String) -> String {
+    if value.is_empty() { "-".into() } else { value }
 }
 
 struct Palette {

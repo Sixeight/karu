@@ -34,40 +34,39 @@ karu fetches from `origin`, checks local branches and worktrees, and gives each 
 
 | Verdict | Action |
 | --- | --- |
-| `delete` | Include in the group confirmation. |
-| `ask` | Ask about this item separately. |
+| `delete` | Preselect in the interactive candidate list. |
+| `ask` | Leave unchecked in the interactive candidate list. |
 | `keep` | Leave it alone. |
 
 The current branch is kept and hidden from the table.
-Deletions start after all questions are answered.
-Declining the group confirmation still lets each `ask` item be reviewed.
+Deletion starts after the selection is confirmed.
+In a terminal, `delete` items start selected and `ask` items start unchecked. Use the candidate list to change the selection and confirm all deletions together. It shows each item's reason, unpushed commits, and worktree; wider terminals also show unique commits and pull request details. `d`, `l`, and `s` open the diff, log, and worktree status for the current item. With `--yes`, `delete` items are already confirmed and the list contains only `ask` items.
 
-For each `ask` item, karu shows unpushed commits and uncommitted changes that deletion would lose.
-The menu starts on **Keep**.
+When the terminal cannot show the selector, karu keeps the group confirmation and asks about each `ask` item separately.
 
 | Key | Action |
 | --- | --- |
-| `↑` / `↓` or `k` / `j` | Select an action. |
-| Enter | Confirm the selected action. |
-| `y` / `n` | Select Delete / Keep, then press Enter to confirm. |
+| `↑` / `↓` or `k` / `j` | Move through candidates. |
+| Space | Toggle deletion for the current item. |
+| Enter | Delete the selected items. |
 | `d` / `l` / `s` | Inspect the diff, commit log, or worktree status. |
-| Esc | Keep this item and continue. |
+| Esc / `q` | Keep all items in the selector. |
 | Ctrl-C | Cancel before applying the selected deletions. |
 
-Detail views scroll with the arrow keys; Enter, Esc, or `q` returns to the menu.
-When the terminal cannot show the menu, karu uses line prompts: `y`, `Y`, or `yes` confirms deletion; Enter keeps the item.
+Detail views scroll with the arrow keys; Enter, Esc, or `q` returns to the selector.
+When the terminal cannot show the selector, karu uses line prompts: `y`, `Y`, or `yes` confirms deletion; Enter keeps the item.
 
 ### Options
 
 | Option | Effect |
 | --- | --- |
-| `--yes` | Skip the group confirmation; still prompt for each `ask` item. |
+| `--yes` | Skip selection for `delete` items; `ask` items still need selection. |
 | `--json`, `--dry-run` | Print a JSON array and delete nothing. |
 | `--no-fetch` | Skip `git fetch --prune`. |
 | `--force` | Allow deleting dirty worktrees without a separate prompt for their uncommitted changes. |
 | `--no-jev` | Disable Jev for this run. |
 
-`--force` does not skip the group confirmation or change `keep` verdicts.
+`--force` does not skip deletion confirmation or change `keep` verdicts.
 `--json` still fetches and uses Jev when enabled.
 It cannot be combined with `--yes`.
 Use `karu --help` or `git karu -h` for help.
