@@ -48,7 +48,7 @@ When the terminal cannot show the selector, karu keeps the group confirmation an
 | --- | --- |
 | `↑` / `↓` or `k` / `j` | Move through candidates. |
 | Space | Toggle deletion for the current item. |
-| Enter | Delete the selected items. |
+| Enter | Delete the selected items when the cursor is on the run row at the bottom. |
 | `d` / `l` / `s` | Inspect the diff, commit log, or worktree status. |
 | Esc / `q` | Keep all items in the selector. |
 | Ctrl-C | Cancel before applying the selected deletions. |
@@ -63,7 +63,7 @@ When the terminal cannot show the selector, karu uses line prompts: `y`, `Y`, or
 | `--yes` | Skip selection for `delete` items; `ask` items still need selection. |
 | `--json`, `--dry-run` | Print a JSON array and delete nothing. |
 | `--no-fetch` | Skip `git fetch --prune`. |
-| `--force` | Allow deleting dirty worktrees without a separate prompt for their uncommitted changes. |
+| `--force` | Keep deletion recommendations as `delete` even when the worktree has uncommitted changes. |
 | `--no-jev` | Disable Jev for this run. |
 
 `--force` does not skip deletion confirmation or change `keep` verdicts.
@@ -84,7 +84,7 @@ A matching file tree alone does not prove that a branch was merged.
 
 Branches still undecided after these checks get an `ask` verdict after seven idle days.
 Idle time measures when the local branch ref last moved, using the reflog.
-Dirty worktrees also require individual confirmation before deletion, unless `--force` is set.
+Without `--force`, deletion recommendations for dirty worktrees become unchecked `ask` items. Select them in the candidate list to confirm deletion, or confirm them individually when karu uses line prompts.
 Jev can assess the remaining items when enabled; otherwise they are kept.
 
 If the current branch has no commits, karu exits without fetching or deleting anything.
