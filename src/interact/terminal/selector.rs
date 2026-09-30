@@ -387,7 +387,7 @@ pub(super) fn select_candidates(
             vec!["Resize to 40x12, or press Esc to keep all.".into()]
         } else if let Some(detail) = &mut detail {
             detail.resize(usize::from(cols).saturating_sub(1), page);
-            detail.render(&items[cursor], cursor + 1, items.len(), page, color)
+            detail.render(items[cursor], cursor + 1, items.len(), page, color)
         } else {
             display.render(&items, &checked, cursor, color)
         };
