@@ -24,6 +24,10 @@ struct Cli {
     #[arg(long)]
     show_kept: bool,
 
+    /// Include only items with registered worktrees
+    #[arg(long)]
+    worktrees_only: bool,
+
     /// Skip git fetch --prune
     #[arg(long)]
     no_fetch: bool,
@@ -51,6 +55,7 @@ pub fn run() -> Result<ExitCode> {
         yes: cli.yes,
         json: cli.json,
         show_kept: cli.show_kept,
+        worktrees_only: cli.worktrees_only,
         fetch: !cli.no_fetch,
         force: cli.force,
         no_jev: cli.no_jev,

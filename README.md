@@ -65,6 +65,7 @@ When the terminal cannot show the selector, karu uses line prompts: `y`, `Y`, or
 | `--yes` | Skip selection for `delete` items; `ask` items still need selection. |
 | `--json`, `--dry-run` | Print a JSON array and delete nothing. |
 | `--show-kept` | Include kept branches in the candidate list. |
+| `--worktrees-only` | Include only items with registered worktrees in the list, JSON output, and deletion. |
 | `--no-fetch` | Skip `git fetch --prune`. |
 | `--force` | Keep deletion recommendations as `delete` even when the worktree has uncommitted changes. |
 | `--no-jev` | Disable Jev for this run. |

@@ -22,6 +22,7 @@ pub struct Options {
     pub yes: bool,
     pub json: bool,
     pub show_kept: bool,
+    pub worktrees_only: bool,
     pub fetch: bool,
     pub force: bool,
     pub api_key: Option<String>,
@@ -43,6 +44,9 @@ pub fn run(opts: Options) -> Result<()> {
         return Ok(());
     }
     let (collected, mut judged) = collect_and_judge(&root, &opts)?;
+    if opts.worktrees_only {
+        judged.retain(|item| item.candidate.worktree_path.is_some());
+    }
 
     timing::flush();
     if opts.json {

@@ -260,6 +260,35 @@ fn merged_branch_is_hard_delete() {
 }
 
 #[test]
+fn worktrees_only_limits_json_and_deletion_to_registered_worktrees() {
+    let (tmp, repo) = merged_feature_repo();
+    run_git(&repo, &["branch", "plain", "feature"]);
+    let worktree = tmp.path().join("feature-worktree");
+    run_git(
+        &repo,
+        &["worktree", "add", worktree.to_str().unwrap(), "feature"],
+    );
+
+    let report = run_json(&repo, &["--json", "--no-fetch", "--worktrees-only"]);
+    let items = report.as_array().unwrap();
+    assert!(items.iter().all(|item| item["worktree"].is_string()));
+    assert_eq!(verdict_for(&report, "feature")["verdict"], "delete");
+    assert!(!items.iter().any(|item| item["branch"] == "plain"));
+
+    let output = run_sei(&repo, &["--yes", "--no-fetch", "--worktrees-only"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains(" plain "), "{stderr}");
+    let branches = branch_names(&repo);
+    assert!(branches.lines().any(|branch| branch == "plain"));
+    assert!(!branches.lines().any(|branch| branch == "feature"));
+}
+
+#[test]
 fn squash_merged_branch_is_not_hard_deleted() {
     let (_tmp, repo) = setup_repo();
     run_git(&repo, &["checkout", "-b", "feature"]);
