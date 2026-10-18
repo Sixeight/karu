@@ -47,6 +47,8 @@ When the terminal cannot show the selector, karu keeps the group confirmation an
 | Key | Action |
 | --- | --- |
 | `↑` / `↓` or `k` / `j` | Move through candidates. |
+| `G` | Jump to the run row. |
+| `/` | Search branch names and filter the candidate list. Type to narrow the list; Backspace edits, Enter finishes, and Esc clears the search. Hidden candidates keep their selection state. |
 | Space | Toggle deletion for the current item. |
 | Enter | Delete the selected items when the cursor is on the run row at the bottom. |
 | `d` / `l` / `s` | Inspect the diff, commit log, or worktree status. |

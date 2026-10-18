@@ -264,9 +264,15 @@ struct SelectorDisplay {
     layout: Layout,
 }
 
+#[derive(Default)]
+struct Search {
+    query: String,
+    editing: bool,
+}
+
 impl SelectorDisplay {
     fn new(terminal_size: (u16, u16), item_count: usize, cursor: usize) -> Self {
-        let capacity = usize::from(terminal_size.0).saturating_sub(8);
+        let capacity = usize::from(terminal_size.0).saturating_sub(9);
         let start = viewport_start(item_count, cursor, capacity, 0);
         Self {
             start,
@@ -276,7 +282,7 @@ impl SelectorDisplay {
     }
 
     fn resize(&mut self, terminal_size: (u16, u16), item_count: usize, cursor: usize) {
-        let capacity = usize::from(terminal_size.0).saturating_sub(8);
+        let capacity = usize::from(terminal_size.0).saturating_sub(9);
         self.start = viewport_start(item_count, cursor, capacity, self.start);
         self.capacity = capacity;
         self.layout = Layout::new(usize::from(terminal_size.1));
@@ -289,8 +295,10 @@ impl SelectorDisplay {
     fn render(
         &self,
         items: &[&Judged],
+        visible: &[usize],
         checked: &[bool],
         cursor: usize,
+        search: &Search,
         color: bool,
     ) -> Vec<String> {
         let mut lines = vec![
@@ -301,27 +309,45 @@ impl SelectorDisplay {
             ),
             self.layout.render_header(color),
         ];
-        for index in self.start..self.visible_end(items.len()) {
+        for (position, &index) in visible
+            .iter()
+            .enumerate()
+            .take(self.visible_end(visible.len()))
+            .skip(self.start)
+        {
             lines.push(self.layout.render_row(
                 items[index],
                 checked[index],
-                cursor == index,
+                cursor == position,
                 color,
             ));
         }
         let selected = checked.iter().filter(|value| **value).count();
-        let position = if cursor == items.len() {
+        let position = if visible.is_empty() {
+            "no matches".to_string()
+        } else if cursor == visible.len() {
             "run".to_string()
         } else {
-            format!("{}/{}", cursor + 1, items.len())
+            format!("{}/{}", cursor + 1, visible.len())
         };
-        let footer = format!("{position} · {selected} selected");
-        lines.push(if cursor == items.len() {
+        let footer = format!(
+            "{position} · {}/{} shown · {selected} selected",
+            visible.len(),
+            items.len()
+        );
+        lines.push(if cursor == visible.len() {
             paint(&format!("  ▸ {footer}"), &Style::new().bold(), color)
         } else {
             paint(&format!("    {footer}"), &Style::new().dim(), color)
         });
-        lines.push("  ↑/↓ j/k move · Space toggle".into());
+        lines.push(if search.editing {
+            format!("  /{}█  Enter done · Esc clear", search.query)
+        } else if search.query.is_empty() {
+            "  / search branches".into()
+        } else {
+            format!("  /{}  / edit · Esc in search clears", search.query)
+        });
+        lines.push("  ↑/↓ j/k · G to run · Space toggle".into());
         lines.push("  Enter run · Esc/q keep · ^C cancel".into());
         lines.push("  d/l inspect · s status if available".into());
         lines
@@ -359,6 +385,29 @@ fn view_for_key(key: Key, has_worktree: bool) -> Option<View> {
     }
 }
 
+fn move_cursor(key: Key, cursor: usize, item_count: usize) -> usize {
+    match key {
+        Key::ArrowUp | Key::Char('k') => cursor.saturating_sub(1),
+        Key::ArrowDown | Key::Char('j') => (cursor + 1).min(item_count),
+        Key::Char('G') => item_count,
+        _ => cursor,
+    }
+}
+
+fn matching_indices(items: &[&Judged], query: &str) -> Vec<usize> {
+    let query = query.to_lowercase();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            item_name(item)
+                .to_lowercase()
+                .contains(&query)
+                .then_some(index)
+        })
+        .collect()
+}
+
 pub(super) fn select_candidates(
     root: &Path,
     default_branch: &str,
@@ -384,14 +433,17 @@ pub(super) fn select_candidates(
         .map(|item| item.verdict.kind == VerdictKind::Delete)
         .collect();
     let mut cursor = items.len();
+    let mut search = Search::default();
     let color = console::colors_enabled_stderr();
     let mut prompt = Prompt::enter()?;
     let mut display = SelectorDisplay::new(prompt.term.size(), items.len(), cursor);
     let mut detail: Option<Detail> = None;
 
     let selected = loop {
+        let visible = matching_indices(&items, &search.query);
+        cursor = cursor.min(visible.len());
         let size = prompt.term.size();
-        display.resize(size, items.len(), cursor);
+        display.resize(size, visible.len(), cursor);
         let (rows, cols) = size;
         let fits = rows >= super::MIN_ROWS && cols >= super::MIN_COLS;
         let page = usize::from(rows).saturating_sub(7).clamp(1, 8);
@@ -399,9 +451,15 @@ pub(super) fn select_candidates(
             vec!["Resize to 40x12, or press Esc to keep all.".into()]
         } else if let Some(detail) = &mut detail {
             detail.resize(usize::from(cols).saturating_sub(1), page);
-            detail.render(items[cursor], cursor + 1, items.len(), page, color)
+            detail.render(
+                items[visible[cursor]],
+                cursor + 1,
+                visible.len(),
+                page,
+                color,
+            )
         } else {
-            display.render(&items, &checked, cursor, color)
+            display.render(&items, &visible, &checked, cursor, &search, color)
         };
         prompt.draw(&lines)?;
         let key = prompt
@@ -421,6 +479,26 @@ pub(super) fn select_candidates(
             }
             continue;
         }
+        if search.editing {
+            match key {
+                Key::Enter => search.editing = false,
+                Key::Escape => {
+                    search.query.clear();
+                    search.editing = false;
+                    cursor = 0;
+                }
+                Key::Backspace => {
+                    search.query.pop();
+                    cursor = 0;
+                }
+                Key::Char(ch) if !ch.is_control() => {
+                    search.query.push(ch);
+                    cursor = 0;
+                }
+                _ => {}
+            }
+            continue;
+        }
         if !fits {
             if matches!(key, Key::Escape | Key::Char('q')) {
                 break vec![false; checked.len()];
@@ -429,16 +507,22 @@ pub(super) fn select_candidates(
         }
 
         match key {
-            Key::ArrowUp | Key::Char('k') => cursor = cursor.saturating_sub(1),
-            Key::ArrowDown | Key::Char('j') => cursor = (cursor + 1).min(items.len()),
-            Key::Char(' ') if cursor < items.len() => checked[cursor] = !checked[cursor],
-            Key::Enter if cursor == items.len() => break checked,
+            Key::Char('/') => search.editing = true,
+            Key::ArrowUp | Key::ArrowDown | Key::Char('j' | 'k' | 'G') => {
+                cursor = move_cursor(key, cursor, visible.len());
+            }
+            Key::Char(' ') if cursor < visible.len() => {
+                let index = visible[cursor];
+                checked[index] = !checked[index];
+            }
+            Key::Enter if cursor == visible.len() && !visible.is_empty() => break checked,
             Key::Escape | Key::Char('q') => break vec![false; checked.len()],
-            _ if cursor < items.len() => {
+            _ if cursor < visible.len() => {
+                let index = visible[cursor];
                 if let Some(view) =
-                    view_for_key(key, items[cursor].candidate.worktree_path.is_some())
+                    view_for_key(key, items[index].candidate.worktree_path.is_some())
                 {
-                    let raw = match load_view(root, default_branch, items[cursor], view, false) {
+                    let raw = match load_view(root, default_branch, items[index], view, false) {
                         Ok(raw) if raw.trim().is_empty() => {
                             empty_view_message(view, default_branch)
                         }
@@ -468,6 +552,63 @@ mod tests {
     use super::*;
     use crate::candidate::{Verdict, fixtures};
     use crate::reason::Reason;
+
+    #[test]
+    fn search_filters_names_without_changing_candidate_indices() {
+        let mut first = Judged {
+            candidate: fixtures::candidate(),
+            verdict: Verdict {
+                kind: VerdictKind::Ask,
+                source: crate::candidate::Source::Hard,
+                reason: Reason::NoClearReasonToKeep,
+                score: None,
+            },
+        };
+        first.candidate.branch = Some("feature/alpha".into());
+        let mut second = first.clone();
+        second.candidate.branch = Some("bug/beta".into());
+        let mut third = first.clone();
+        third.candidate.branch = Some("feature/gamma".into());
+        let items = [&first, &second, &third];
+
+        assert_eq!(matching_indices(&items, "FEATURE"), vec![0, 2]);
+        assert_eq!(matching_indices(&items, "beta"), vec![1]);
+        assert!(matching_indices(&items, "missing").is_empty());
+        assert_eq!(matching_indices(&items, ""), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn search_footer_counts_selected_candidates_outside_the_filter() {
+        let item = Judged {
+            candidate: fixtures::candidate(),
+            verdict: Verdict {
+                kind: VerdictKind::Delete,
+                source: crate::candidate::Source::Hard,
+                reason: Reason::NoClearReasonToKeep,
+                score: None,
+            },
+        };
+        let items = [&item];
+        let visible = matching_indices(&items, "missing");
+        let display = SelectorDisplay::new((12, 80), visible.len(), 0);
+
+        let search = Search {
+            query: "missing".into(),
+            editing: false,
+        };
+        let lines = display.render(&items, &visible, &[true], 0, &search, false);
+        assert!(lines.iter().any(|line| line.contains("no matches")));
+        assert!(lines.iter().any(|line| line.contains("1 selected")));
+    }
+
+    #[test]
+    fn capital_g_moves_cursor_to_run_row() {
+        for cursor in [0, 1, 5] {
+            assert_eq!(move_cursor(Key::Char('G'), cursor, 5), 5);
+        }
+        assert_eq!(move_cursor(Key::Char('k'), 5, 5), 4);
+        assert_eq!(move_cursor(Key::Char('j'), 5, 5), 5);
+    }
 
     #[test]
     fn cursor_background_covers_every_cell_and_resets_after_the_row() {
