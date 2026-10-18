@@ -3,20 +3,40 @@ use console::{Style, Term, measure_text_width, strip_ansi_codes, truncate_str};
 use crate::candidate::{Judged, Source, VerdictKind};
 use crate::reason::Reason;
 
-pub fn print_table(items: &[Judged]) {
+pub fn print_table(items: &[Judged], show_kept: bool) {
     let color = console::colors_enabled_stderr();
-    let table = render_table_with(items, color);
-    let output = if let Some((_, cols)) = Term::stderr().size_checked() {
-        let width = usize::from(cols).saturating_sub(1);
-        if table_fits(&table, width) {
-            table
-        } else {
-            render_compact_with(items, width, color)
-        }
-    } else {
-        table
-    };
+    let width = Term::stderr()
+        .size_checked()
+        .map(|(_, cols)| usize::from(cols).saturating_sub(1));
+    let output = render_overview_with(items, show_kept, color, width);
     eprint!("{output}");
+}
+
+fn render_overview_with(
+    items: &[Judged],
+    show_kept: bool,
+    color: bool,
+    width: Option<usize>,
+) -> String {
+    let table = render_table_filtered(items, color, show_kept);
+    let mut output = match width {
+        Some(width) if !table_fits(&table, width) => {
+            render_compact_with(items, width, color, show_kept)
+        }
+        _ => table,
+    };
+    let kept = items
+        .iter()
+        .filter(|item| !item.candidate.is_head && item.verdict.kind == VerdictKind::Keep)
+        .count();
+    if !show_kept && kept > 0 {
+        output.push_str(&format!(
+            "  {} kept {} (--show-kept to list)\n",
+            kept,
+            if kept == 1 { "branch" } else { "branches" }
+        ));
+    }
+    output
 }
 
 fn table_fits(table: &str, width: usize) -> bool {
@@ -31,7 +51,14 @@ fn render_table(items: &[Judged]) -> String {
 }
 
 pub fn render_table_with(items: &[Judged], color: bool) -> String {
-    let mut rows: Vec<&Judged> = items.iter().filter(|i| !i.candidate.is_head).collect();
+    render_table_filtered(items, color, true)
+}
+
+fn render_table_filtered(items: &[Judged], color: bool, show_kept: bool) -> String {
+    let mut rows: Vec<&Judged> = items
+        .iter()
+        .filter(|i| !i.candidate.is_head && (show_kept || i.verdict.kind != VerdictKind::Keep))
+        .collect();
     rows.sort_by_cached_key(|item| sort_key(item));
 
     let name_width = rows
@@ -88,10 +115,12 @@ pub fn render_table_with(items: &[Judged], color: bool) -> String {
     out
 }
 
-fn render_compact_with(items: &[Judged], width: usize, color: bool) -> String {
+fn render_compact_with(items: &[Judged], width: usize, color: bool, show_kept: bool) -> String {
     let mut rows: Vec<&Judged> = items
         .iter()
-        .filter(|item| !item.candidate.is_head)
+        .filter(|item| {
+            !item.candidate.is_head && (show_kept || item.verdict.kind != VerdictKind::Keep)
+        })
         .collect();
     rows.sort_by_cached_key(|item| sort_key(item));
 
@@ -830,5 +859,34 @@ mod tests {
         let why0 = lines[0].find("empty").unwrap();
         let why1 = lines[1].find("empty?").unwrap();
         assert_eq!(why0, why1);
+    }
+
+    #[test]
+    fn default_overview_counts_kept_branches_without_listing_them() {
+        let items = vec![
+            judged(VerdictKind::Delete, Reason::Merged, "b/delete"),
+            judged(VerdictKind::Ask, Reason::Stale, "b/ask"),
+            judged(VerdictKind::Keep, Reason::OpenPr, "b/keep"),
+            {
+                let mut head = judged(VerdictKind::Keep, Reason::CurrentHead, "main");
+                head.candidate.is_head = true;
+                head
+            },
+        ];
+        let overview = render_overview_with(&items, false, false, None);
+        assert!(overview.contains("b/delete"));
+        assert!(overview.contains("b/ask"));
+        assert!(!overview.contains("b/keep"));
+        assert!(!overview.contains("main"));
+        assert!(overview.contains("1 kept branch"));
+        assert!(overview.contains("--show-kept"));
+
+        let full = render_overview_with(&items, true, false, None);
+        assert!(full.contains("b/keep"));
+        assert!(!full.contains("--show-kept"));
+
+        let compact = render_overview_with(&items, false, false, Some(40));
+        assert!(!compact.contains("b/keep"));
+        assert!(compact.contains("1 kept branch"));
     }
 }

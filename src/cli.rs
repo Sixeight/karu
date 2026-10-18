@@ -20,6 +20,10 @@ struct Cli {
     #[arg(long, visible_alias = "dry-run", conflicts_with = "yes")]
     json: bool,
 
+    /// Include kept branches in the candidate list
+    #[arg(long)]
+    show_kept: bool,
+
     /// Skip git fetch --prune
     #[arg(long)]
     no_fetch: bool,
@@ -46,6 +50,7 @@ pub fn run() -> Result<ExitCode> {
         path: cli.path.unwrap_or_else(|| PathBuf::from(".")),
         yes: cli.yes,
         json: cli.json,
+        show_kept: cli.show_kept,
         fetch: !cli.no_fetch,
         force: cli.force,
         no_jev: cli.no_jev,

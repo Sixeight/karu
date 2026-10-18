@@ -38,7 +38,7 @@ karu fetches from `origin`, checks local branches and worktrees, and gives each 
 | `ask` | Leave unchecked in the interactive candidate list. |
 | `keep` | Leave it alone. |
 
-The current branch is kept and hidden from the table.
+The current branch is kept and hidden from the table. Other kept branches are counted below the candidate list; use `--show-kept` to include them in the list.
 Deletion starts after the selection is confirmed.
 In a terminal, `delete` items start selected and `ask` items start unchecked. Use the candidate list to change the selection and confirm all deletions together. It shows each item's reason, unpushed commits, and worktree; wider terminals also show unique commits and pull request details. `d`, `l`, and `s` open the diff, log, and worktree status for the current item. With `--yes`, `delete` items are already confirmed and the list contains only `ask` items.
 
@@ -62,6 +62,7 @@ When the terminal cannot show the selector, karu uses line prompts: `y`, `Y`, or
 | --- | --- |
 | `--yes` | Skip selection for `delete` items; `ask` items still need selection. |
 | `--json`, `--dry-run` | Print a JSON array and delete nothing. |
+| `--show-kept` | Include kept branches in the candidate list. |
 | `--no-fetch` | Skip `git fetch --prune`. |
 | `--force` | Keep deletion recommendations as `delete` even when the worktree has uncommitted changes. |
 | `--no-jev` | Disable Jev for this run. |

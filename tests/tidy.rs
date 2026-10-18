@@ -95,6 +95,36 @@ fn json_report(repo: &Path) -> serde_json::Value {
     run_json(repo, &["--json", "--no-fetch"])
 }
 
+#[test]
+fn kept_branches_are_counted_unless_requested() {
+    let (_tmp, repo) = setup_repo();
+    run_git(&repo, &["branch", "protected"]);
+    run_git(&repo, &["config", "--add", "karu.keep", "protected"]);
+
+    let default = run_sei(&repo, &["--yes", "--no-fetch"]);
+    assert!(
+        default.status.success(),
+        "{}",
+        String::from_utf8_lossy(&default.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&default.stderr);
+    assert!(
+        stderr.contains("1 kept branch (--show-kept to list)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(" protected "), "{stderr}");
+
+    let full = run_sei(&repo, &["--yes", "--no-fetch", "--show-kept"]);
+    assert!(
+        full.status.success(),
+        "{}",
+        String::from_utf8_lossy(&full.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&full.stderr);
+    assert!(stderr.contains(" protected "), "{stderr}");
+    assert!(!stderr.contains("--show-kept to list"), "{stderr}");
+}
+
 fn traced_git_commands(trace: &Path) -> Vec<serde_json::Value> {
     let commands: Vec<_> = fs::read_to_string(trace)
         .unwrap()

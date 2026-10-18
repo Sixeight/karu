@@ -21,6 +21,7 @@ pub struct Options {
     pub path: PathBuf,
     pub yes: bool,
     pub json: bool,
+    pub show_kept: bool,
     pub fetch: bool,
     pub force: bool,
     pub api_key: Option<String>,
@@ -54,7 +55,7 @@ pub fn run(opts: Options) -> Result<()> {
 
     // the table's order is also the order of the questions below
     judged.sort_by_cached_key(report::sort_key);
-    report::print_table(&judged);
+    report::print_table(&judged, opts.show_kept);
 
     let delete_count = judged
         .iter()
