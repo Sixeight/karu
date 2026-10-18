@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
@@ -8,11 +7,12 @@ use anyhow::{Context, Result};
 use crate::candidate::{Judged, VerdictKind};
 use crate::git;
 use crate::interact::{Decision, is_yes};
+use crate::trash::{self, is_trash};
 
 pub struct ApplyResult {
     pub deleted: Vec<String>,
     pub errors: Vec<String>,
-    /// Worktrees whose files are still being deleted in the background.
+    /// Worktrees whose files were queued for background deletion.
     pub trashed: usize,
 }
 
@@ -91,25 +91,41 @@ where
         .iter()
         .filter(|item| item.verdict.kind == VerdictKind::Delete)
         .collect();
+    let agents = if targets.is_empty() {
+        crate::agents::ActiveAgents::default()
+    } else {
+        crate::agents::ActiveAgents::inspect()
+    };
     let trashed = AtomicUsize::new(0);
     let mut result = run_deletions(
         &targets,
         |item| {
+            agents.ensure_unused(item.candidate.worktree_path.as_deref())?;
             let moved = remove_worktree(root, item, force)?;
             if moved {
                 trashed.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
         },
-        |item| delete_branch(root, item),
+        |item| {
+            agents.ensure_unused(item.candidate.worktree_path.as_deref())?;
+            if let Some(branch) = item.candidate.branch.as_deref() {
+                let worktrees = git::worktree_list(root)?;
+                let paths: Vec<&str> = worktrees
+                    .iter()
+                    .map(|worktree| worktree.path.as_str())
+                    .collect();
+                agents.ensure_branch_unused(branch, &paths)?;
+            }
+            delete_branch(root, item)
+        },
         report,
     );
     result.trashed = trashed.into_inner();
+    trash::resume();
     result
 }
 
-/// Removing a worktree means deleting its files, which is nearly all of the
-/// time a deletion takes, so several go at once.
 const WORKTREE_REMOVALS_AT_ONCE: usize = 4;
 
 /// Worktrees are removed side by side. Each branch is deleted on this thread
@@ -212,9 +228,18 @@ fn remove_worktree(root: &Path, item: &Judged, force: bool) -> Result<bool> {
     if item.candidate.is_primary_worktree {
         return Ok(false);
     }
+    let wt = Path::new(path);
+    if item.candidate.worktree_matches_default && !force && git::is_dirty(wt) {
+        let default_branch = git::default_branch(root)?;
+        let reference = format!("refs/heads/{default_branch}");
+        if !git::worktree_matches_ref(wt, &reference) {
+            anyhow::bail!(
+                "failed to remove worktree {path}: its uncommitted changes no longer match {default_branch}"
+            );
+        }
+    }
     // a dirty worktree the user already confirmed (or --force) may go
     let force = force || item.candidate.worktree_dirty;
-    let wt = Path::new(path);
     let missing = !wt.exists();
     let Some(admin) = worktree_admin_dir(root, wt) else {
         return git_remove(root, path, force || missing).map(|()| false);
@@ -240,6 +265,7 @@ fn remove_worktree(root: &Path, item: &Judged, force: bool) -> Result<bool> {
     let Some(trash) = trash_path(wt) else {
         return git_remove(root, path, force).map(|()| false);
     };
+    let job = trash::Job::prepare(&trash, Some(&admin))?;
     if std::fs::rename(wt, &trash).is_err() {
         // another filesystem, a busy directory, a read-only parent
         return git_remove(root, path, force).map(|()| false);
@@ -263,7 +289,7 @@ fn remove_worktree(root: &Path, item: &Judged, force: bool) -> Result<bool> {
         }
         return Err(err).with_context(|| format!("failed to unregister worktree {path}"));
     }
-    delete_in_background(&trash);
+    job.commit()?;
     Ok(true)
 }
 
@@ -360,7 +386,7 @@ fn path_key(path: &Path) -> String {
 }
 
 /// Prefix of the directories karu renames worktrees to before deleting them.
-const TRASH_PREFIX: &str = ".karu-trash-";
+const TRASH_PREFIX: &str = trash::PREFIX;
 
 fn trash_path(wt: &Path) -> Option<PathBuf> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -374,37 +400,6 @@ fn trash_path(wt: &Path) -> Option<PathBuf> {
 fn rescue_path(trash: &Path) -> Option<PathBuf> {
     let name = trash.file_name()?.to_str()?.strip_prefix(TRASH_PREFIX)?;
     Some(trash.with_file_name(format!("karu-kept-{name}")))
-}
-
-/// A real directory (not a symlink) that karu itself named as trash.
-fn is_trash(path: &Path) -> bool {
-    let named = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with(TRASH_PREFIX));
-    named
-        && std::fs::symlink_metadata(path)
-            .map(|m| m.file_type().is_dir())
-            .unwrap_or(false)
-}
-
-/// Deletes the directory in a process that outlives karu. It gets no
-/// terminal (so nothing lands on the next prompt) and its own process group
-/// (so Ctrl-C on karu does not stop it halfway).
-fn delete_in_background(trash: &Path) {
-    use std::os::unix::process::CommandExt;
-    if !trash.is_absolute() || !is_trash(trash) {
-        return;
-    }
-    let _ = Command::new("rm")
-        .arg("-rf")
-        .arg("--")
-        .arg(trash)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn();
 }
 
 /// Finishes what an interrupted run left behind: trash next to any worktree
@@ -424,11 +419,14 @@ pub fn sweep_trash(judged: &[Judged]) {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if is_trash(&path) {
-                delete_in_background(&path);
+            if is_trash(&path)
+                && let Err(err) = trash::Job::prepare(&path, None).and_then(trash::Job::commit)
+            {
+                eprintln!("warning: failed to queue trash: {err:#}");
             }
         }
     }
+    trash::resume();
 }
 
 fn delete_branch(root: &Path, item: &Judged) -> Result<()> {
@@ -474,8 +472,7 @@ mod tests {
         let result = apply(Path::new("/tmp"), &[judged(VerdictKind::Delete)], false);
         assert_eq!(result.errors.len(), 1);
         let error = &result.errors[0];
-        assert!(error.contains("failed to delete branch feature"), "{error}");
-        assert!(error.contains("git branch"), "{error}");
+        assert!(error.contains("git worktree list"), "{error}");
     }
 
     #[test]
@@ -737,16 +734,13 @@ mod tests {
             .collect()
     }
 
-    /// The detached `rm` competes with everything else on the machine, so the
-    /// budget is generous; a passing run still returns as soon as it is done.
     fn wait_until_gone(parent: &Path) {
-        for _ in 0..600 {
-            if trash_dirs(parent).is_empty() {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        panic!("trash was never deleted: {:?}", trash_dirs(parent));
+        trash::drain().unwrap();
+        assert!(
+            trash_dirs(parent).is_empty(),
+            "trash was not deleted: {:?}",
+            trash_dirs(parent)
+        );
     }
 
     #[test]
@@ -831,6 +825,35 @@ mod tests {
         // confirmed by the user, or --force: then it goes
         remove_worktree(&repo, &item, true).unwrap();
         assert!(!wt.exists());
+    }
+
+    #[test]
+    fn redundant_dirty_worktree_changed_after_verdict_is_not_removed() {
+        let (tmp, repo, wt, mut item) = repo_with_worktree();
+        std::fs::write(repo.join("a.txt"), "finished\n").unwrap();
+        let commit = git_cmd()
+            .args(["add", "a.txt"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(commit.success());
+        let commit = git_cmd()
+            .args(["commit", "-q", "-m", "finish"])
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(commit.success());
+        std::fs::write(wt.join("a.txt"), "finished\n").unwrap();
+        item.candidate.worktree_dirty = true;
+        item.candidate.worktree_matches_default = true;
+        assert!(git::worktree_matches_ref(&wt, "refs/heads/main"));
+
+        std::fs::write(wt.join("a.txt"), "later work\n").unwrap();
+        let err = remove_worktree(&repo, &item, false).unwrap_err();
+        assert!(format!("{err:#}").contains("no longer match"));
+        assert!(wt.join("a.txt").exists());
+        assert!(worktree_is_registered(&repo, &wt));
+        assert!(trash_dirs(tmp.path()).is_empty());
     }
 
     #[test]

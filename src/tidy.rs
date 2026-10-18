@@ -31,6 +31,9 @@ pub struct Options {
 pub fn run(opts: Options) -> Result<()> {
     // resolved once; the fetch, the PR lookup and the collection all need it
     let root = git::repo_root(&opts.path)?;
+    if !opts.json {
+        crate::trash::resume();
+    }
     if !git::has_head_commit(&root)? {
         note("current branch has no commits; nothing to delete");
         if opts.json {

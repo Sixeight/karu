@@ -16,6 +16,33 @@ mod selector;
 const MIN_ROWS: u16 = 12;
 const MIN_COLS: u16 = 40;
 
+#[cfg(test)]
+mod redraw_tests {
+    use super::redraw_changed_lines;
+
+    #[test]
+    fn redraws_only_changed_rows_without_erasing_the_frame() {
+        let previous = vec![
+            "header".into(),
+            "first".into(),
+            "second".into(),
+            "footer".into(),
+        ];
+        let next = vec![
+            "header".into(),
+            "FIRST".into(),
+            "second".into(),
+            "FOOTER".into(),
+        ];
+
+        assert_eq!(
+            redraw_changed_lines(&previous, &next),
+            "\x1b[4A\x1b[1B\rFIRST\x1b[0K\r\n\x1b[1B\rFOOTER\x1b[0K\r\n"
+        );
+        assert_eq!(redraw_changed_lines(&next, &next), "");
+    }
+}
+
 pub fn is_available() -> bool {
     std::io::stdin().is_terminal()
         && std::io::stderr().is_terminal()
@@ -38,6 +65,24 @@ struct Prompt {
     term: Term,
     rows: usize,
     size: (u16, u16),
+    frame: Vec<String>,
+}
+
+fn redraw_changed_lines(previous: &[String], next: &[String]) -> String {
+    if previous == next {
+        return String::new();
+    }
+    let mut output = format!("\x1b[{}A", previous.len());
+    for (before, after) in previous.iter().zip(next) {
+        if before == after {
+            output.push_str("\x1b[1B");
+        } else {
+            output.push('\r');
+            output.push_str(after);
+            output.push_str("\x1b[0K\r\n");
+        }
+    }
+    output
 }
 
 impl Prompt {
@@ -48,6 +93,7 @@ impl Prompt {
             size: term.size(),
             term,
             rows: 0,
+            frame: Vec::new(),
         };
         prompt.term.hide_cursor()?;
         Ok(prompt)
@@ -62,21 +108,31 @@ impl Prompt {
             self.term.clear_last_lines(self.rows)?;
         }
         self.rows = 0;
+        self.frame.clear();
         self.size = size;
         Ok(())
     }
 
     fn draw(&mut self, lines: &[String]) -> Result<()> {
-        self.clear()?;
-        let (rows, cols) = self.size;
+        let size = self.term.size();
+        let (rows, cols) = size;
         let frame = lines
             .iter()
             .take(usize::from(rows).saturating_sub(2).max(1))
-            .map(|line| console::truncate_str(line, usize::from(cols).saturating_sub(1), "…"))
+            .map(|line| {
+                console::truncate_str(line, usize::from(cols).saturating_sub(1), "…").into_owned()
+            })
             .collect::<Vec<_>>();
-        self.term.write_str(&frame.join("\r\n"))?;
-        self.term.write_str("\r\n")?;
+        if size == self.size && frame.len() == self.frame.len() {
+            self.term
+                .write_str(&redraw_changed_lines(&self.frame, &frame))?;
+        } else {
+            self.clear()?;
+            self.term.write_str(&frame.join("\r\n"))?;
+            self.term.write_str("\r\n")?;
+        }
         self.rows = frame.len();
+        self.frame = frame;
         Ok(())
     }
 }

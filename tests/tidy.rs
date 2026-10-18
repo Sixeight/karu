@@ -23,6 +23,7 @@ fn isolate_process_git() {
         std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
         std::env::set_var("GIT_CONFIG_SYSTEM", "/dev/null");
         std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+        std::env::set_var("XDG_STATE_HOME", tempfile::tempdir().unwrap().keep());
     });
 }
 
@@ -320,6 +321,126 @@ fn long_idle_branch_is_asked_unless_configured_off() {
     run_git(&repo, &["config", "karu.staleDays", "0"]);
     let item = verdict_for(&json_report(&repo), "sixeight/forgotten").clone();
     assert_eq!(item["verdict"], "keep");
+}
+
+#[test]
+fn long_idle_branch_without_unique_commits_is_preselected() {
+    let (_tmp, repo) = setup_repo();
+    run_git(&repo, &["branch", "forgotten"]);
+    set_reflog_age(&repo, "forgotten", 8 * 24 * 60 * 60);
+
+    let item = verdict_for(&json_report(&repo), "forgotten").clone();
+    assert_eq!(item["verdict"], "delete");
+    assert_eq!(item["reason"], "idle for a long time");
+
+    let output = run_sei(&repo, &["--yes", "--no-fetch"]);
+    assert!(output.status.success());
+    assert!(!branch_names(&repo).lines().any(|b| b == "forgotten"));
+}
+
+#[test]
+fn long_idle_branch_with_dirty_worktree_needs_confirmation() {
+    let (tmp, repo) = setup_repo();
+    run_git(&repo, &["branch", "forgotten"]);
+    let wt = tmp.path().join("forgotten-wt");
+    run_git(
+        &repo,
+        &["worktree", "add", wt.to_str().unwrap(), "forgotten"],
+    );
+    fs::write(wt.join("unfinished.txt"), "keep me\n").unwrap();
+    set_reflog_age(&repo, "forgotten", 8 * 24 * 60 * 60);
+
+    let item = verdict_for(&json_report(&repo), "forgotten").clone();
+    assert_eq!(item["verdict"], "ask");
+    assert_eq!(
+        item["reason"],
+        "idle for a long time; worktree has uncommitted changes"
+    );
+
+    let output = run_sei(&repo, &["--yes", "--no-fetch"]);
+    assert!(output.status.success());
+    assert!(wt.join("unfinished.txt").exists());
+    assert!(branch_names(&repo).lines().any(|b| b == "forgotten"));
+}
+
+#[test]
+fn dirty_worktree_matching_main_is_preselected() {
+    let (tmp, repo) = setup_repo();
+    run_git(&repo, &["branch", "forgotten"]);
+    fs::write(repo.join("README.md"), "# finished\n").unwrap();
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "finish README"]);
+    let wt = tmp.path().join("forgotten-wt");
+    run_git(
+        &repo,
+        &["worktree", "add", wt.to_str().unwrap(), "forgotten"],
+    );
+    fs::write(wt.join("README.md"), "# finished\n").unwrap();
+    run_git(&wt, &["add", "README.md"]);
+    set_reflog_age(&repo, "forgotten", 8 * 24 * 60 * 60);
+
+    let item = verdict_for(&json_report(&repo), "forgotten").clone();
+    assert_eq!(item["verdict"], "delete");
+
+    let output = run_sei(&repo, &["--yes", "--no-fetch"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!wt.exists());
+    assert!(!branch_names(&repo).lines().any(|b| b == "forgotten"));
+}
+
+#[test]
+fn dirty_worktree_with_untracked_file_is_not_preselected() {
+    let (tmp, repo) = setup_repo();
+    run_git(&repo, &["branch", "forgotten"]);
+    fs::write(repo.join("README.md"), "# finished\n").unwrap();
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "finish README"]);
+    let wt = tmp.path().join("forgotten-wt");
+    run_git(
+        &repo,
+        &["worktree", "add", wt.to_str().unwrap(), "forgotten"],
+    );
+    fs::write(wt.join("README.md"), "# finished\n").unwrap();
+    fs::write(wt.join("notes.txt"), "unique work\n").unwrap();
+    set_reflog_age(&repo, "forgotten", 8 * 24 * 60 * 60);
+
+    assert_eq!(
+        verdict_for(&json_report(&repo), "forgotten")["verdict"],
+        "ask"
+    );
+    let output = run_sei(&repo, &["--yes", "--no-fetch"]);
+    assert!(output.status.success());
+    assert!(wt.join("notes.txt").exists());
+}
+
+#[test]
+fn dirty_worktree_with_unique_staged_content_is_not_preselected() {
+    let (tmp, repo) = setup_repo();
+    run_git(&repo, &["branch", "forgotten"]);
+    fs::write(repo.join("README.md"), "# finished\n").unwrap();
+    run_git(&repo, &["add", "."]);
+    run_git(&repo, &["commit", "-m", "finish README"]);
+    let wt = tmp.path().join("forgotten-wt");
+    run_git(
+        &repo,
+        &["worktree", "add", wt.to_str().unwrap(), "forgotten"],
+    );
+    fs::write(wt.join("README.md"), "# staged work\n").unwrap();
+    run_git(&wt, &["add", "README.md"]);
+    fs::write(wt.join("README.md"), "# finished\n").unwrap();
+    set_reflog_age(&repo, "forgotten", 8 * 24 * 60 * 60);
+
+    assert_eq!(
+        verdict_for(&json_report(&repo), "forgotten")["verdict"],
+        "ask"
+    );
+    let output = run_sei(&repo, &["--yes", "--no-fetch"]);
+    assert!(output.status.success());
+    assert!(wt.exists());
 }
 
 #[test]

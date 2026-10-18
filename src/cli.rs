@@ -31,11 +31,17 @@ struct Cli {
     /// Never send anything to Jev, whatever `karu.jev` says
     #[arg(long)]
     no_jev: bool,
+
+    #[arg(long, hide = true, conflicts_with = "json")]
+    drain_trash: bool,
 }
 
 pub fn run() -> Result<ExitCode> {
     let cli = Cli::from_arg_matches(&Cli::command().bin_name(invoked_as()).get_matches())
         .unwrap_or_else(|err| err.exit());
+    if cli.drain_trash {
+        return exit_code(crate::trash::drain());
+    }
     exit_code(tidy::run(Options {
         path: cli.path.unwrap_or_else(|| PathBuf::from(".")),
         yes: cli.yes,
@@ -74,6 +80,17 @@ fn invoked_as() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_cleanup_cannot_override_a_dry_run() {
+        for option in ["--json", "--dry-run"] {
+            assert!(
+                Cli::command()
+                    .try_get_matches_from(["karu", "--drain-trash", option])
+                    .is_err()
+            );
+        }
+    }
 
     #[test]
     fn completion_exits_successfully() {

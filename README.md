@@ -75,6 +75,9 @@ Use `karu --help` or `git karu -h` for help.
 
 karu keeps the current branch, the default branch, the branch in the primary worktree, branches matching `karu.keep`, and branches with an open pull request.
 
+It also keeps worktrees used by a running Claude Code, Codex, OpenCode, Gemini CLI, aider, or Grok CLI process, including sessions waiting for input. A branch whose name matches an active worktree directory is kept even when that worktree has switched to another branch. It checks process working directories within each worktree and checks again before deletion. `--force` does not override this protection.
+On Linux it reads `/proc`; on macOS and other Unix systems it uses `ps` and `lsof`. This is a best-effort check: remote sessions, desktop sessions whose process runs outside the worktree, and unrecognized launchers may be missed. If inspection fails, karu keeps worktrees and prints a warning.
+
 Unique commits are commits missing from the local default branch.
 Git merge checks use that local branch, so keeping it up to date helps karu recognize completed work.
 
@@ -82,12 +85,12 @@ Other branches become deletion candidates when they diverged from the default br
 Review checkouts from a finished pull request can also qualify when all unique commits exist on fetched refs and the branch has no live upstream.
 A matching file tree alone does not prove that a branch was merged.
 
-Branches still undecided after these checks get an `ask` verdict after seven idle days.
+Branches still undecided after these checks become candidates after seven idle days. If they have no commits found only locally and no live upstream, they are preselected as `delete`; otherwise they get an unchecked `ask` verdict. An unknown commit count also stays `ask`.
 Idle time measures when the local branch ref last moved, using the reflog.
-Without `--force`, deletion recommendations for dirty worktrees become unchecked `ask` items. Select them in the candidate list to confirm deletion, or confirm them individually when karu uses line prompts.
+Without `--force`, deletion recommendations for dirty worktrees become unchecked `ask` items, except when the tracked working files match the default branch, the index matches either `HEAD` or the default branch, and there are no untracked files. In that case the item stays preselected as `delete`; karu checks again before removal. Select other dirty items in the candidate list to confirm deletion, or confirm them individually when karu uses line prompts.
 Jev can assess the remaining items when enabled; otherwise they are kept.
 
-If the current branch has no commits, karu exits without fetching or deleting anything.
+If the current branch has no commits, karu exits without fetching or deleting branches.
 
 ## Configuration
 
@@ -141,6 +144,9 @@ git branch <branch-name> <commit-hash>
 
 This does not restore uncommitted worktree changes.
 Worktree files are usually removed in the background after the directory is renamed, so the original path becomes available before cleanup finishes.
+Background cleanup runs one `rm` at a time across karu invocations sharing the same state directory.
+Pending deletions are saved in `$XDG_STATE_HOME/karu/trash` (default: `~/.local/state/karu/trash`) and resumed on the next normal run, even if no worktree remains registered there.
+`--json` and `--dry-run` do not start cleanup. Failed deletions remain queued for a later run, with errors recorded in `cleanup.log` in the queue directory.
 
 ## Development
 

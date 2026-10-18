@@ -10,11 +10,20 @@ pub const ASK_HIGH: f64 = 0.6;
 
 /// Everything that can be decided without asking Jev.
 pub fn without_jev(candidate: &Candidate, force: bool, stale_after_secs: u64) -> Option<Verdict> {
-    hard_verdict(candidate, force).or_else(|| stale_verdict(candidate, stale_after_secs))
+    hard_verdict(candidate, force).or_else(|| {
+        stale_verdict(candidate, stale_after_secs)
+            .map(|verdict| guard_dirty(candidate, verdict, force))
+    })
 }
 
 /// Jev's answer as a verdict, behind the same guard as the rules.
 pub fn with_jev(candidate: &Candidate, nouls: Nouls, force: bool) -> Verdict {
+    if candidate.active_agent {
+        return keep(Reason::ActiveAgent);
+    }
+    if !candidate.agent_check_available && candidate.worktree_path.is_some() {
+        return keep(Reason::AgentCheckUnavailable);
+    }
     guard_dirty(candidate, compose_jev_for(candidate, nouls), force)
 }
 
@@ -28,11 +37,14 @@ fn hard_verdict(candidate: &Candidate, force: bool) -> Option<Verdict> {
     hard_rules(candidate).map(|verdict| guard_dirty(candidate, verdict, force))
 }
 
-/// Uncommitted changes cannot be recovered from anywhere, so a dirty worktree
-/// is never deleted on a rule's word alone: the delete becomes a question.
-/// `--force` opts out.
+/// Dirty worktrees need confirmation unless their files match the default
+/// branch and the index adds no unique content. `--force` opts out.
 fn guard_dirty(candidate: &Candidate, verdict: Verdict, force: bool) -> Verdict {
-    if force || !candidate.worktree_dirty || verdict.kind != VerdictKind::Delete {
+    if force
+        || !candidate.worktree_dirty
+        || candidate.worktree_matches_default
+        || verdict.kind != VerdictKind::Delete
+    {
         return verdict;
     }
     Verdict {
@@ -52,6 +64,12 @@ fn unconditional_keep(candidate: &Candidate) -> Option<Verdict> {
     }
     if candidate.is_primary_worktree {
         return Some(keep(Reason::PrimaryWorktree));
+    }
+    if candidate.active_agent {
+        return Some(keep(Reason::ActiveAgent));
+    }
+    if !candidate.agent_check_available && candidate.worktree_path.is_some() {
+        return Some(keep(Reason::AgentCheckUnavailable));
     }
     if candidate.keep_configured {
         return Some(keep(Reason::KeepConfigured));
@@ -100,12 +118,20 @@ fn hard_rules(candidate: &Candidate) -> Option<Verdict> {
 
 pub const STALE_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
 
-/// Runs after `hard_verdict` found nothing, so open PRs, dirty worktrees and
-/// the other keeps are already out. What is left and untouched for this long
-/// is worth a question rather than a silent keep.
+/// Runs after `hard_verdict` found nothing. Idle branches without local-only
+/// commits or a live upstream can be preselected; the rest need confirmation.
 fn stale_verdict(candidate: &Candidate, stale_after_secs: u64) -> Option<Verdict> {
     let idle = candidate.ref_age_secs?;
-    (idle >= stale_after_secs).then_some(ask(Reason::Stale))
+    if idle < stale_after_secs {
+        return None;
+    }
+    Some(
+        if candidate.local_only_commit_count == Some(0) && !candidate.tracks_live_upstream {
+            delete(Reason::Stale)
+        } else {
+            ask(Reason::Stale)
+        },
+    )
 }
 
 /// Jev's scores as a delete or a question; `None` when they support neither.
@@ -328,6 +354,36 @@ mod tests {
 
     fn candidate() -> Candidate {
         crate::candidate::fixtures::candidate()
+    }
+
+    #[test]
+    fn active_agent_is_kept_even_when_merged_and_forced() {
+        let mut c = candidate();
+        c.active_agent = true;
+        c.merged = true;
+        c.diverged = true;
+        c.ref_age_secs = Some(100 * STALE_AFTER_SECS);
+        for force in [false, true] {
+            let verdict = without_jev(&c, force, STALE_AFTER_SECS).unwrap();
+            assert_eq!(verdict.kind, VerdictKind::Keep);
+            assert_eq!(verdict.reason, "active AI agent session");
+            assert_eq!(with_jev(&c, landed_nouls(), force).kind, VerdictKind::Keep);
+        }
+    }
+
+    #[test]
+    fn unavailable_agent_check_keeps_worktrees_even_when_forced() {
+        let mut c = candidate();
+        c.worktree_path = Some("/repo/wt".into());
+        c.agent_check_available = false;
+        c.merged = true;
+        c.diverged = true;
+        for force in [false, true] {
+            let verdict = without_jev(&c, force, STALE_AFTER_SECS).unwrap();
+            assert_eq!(verdict.kind, VerdictKind::Keep);
+            assert_eq!(verdict.reason, "AI agent session check unavailable");
+            assert_eq!(with_jev(&c, landed_nouls(), force).kind, VerdictKind::Keep);
+        }
     }
 
     #[test]
@@ -1098,11 +1154,49 @@ mod tests {
 
     #[test]
     fn long_idle_branch_without_an_open_pr_is_asked() {
-        let v = stale_verdict(&idle_for(Some(WEEK)), WEEK).unwrap();
+        let mut c = idle_for(Some(WEEK));
+        c.local_only_commit_count = Some(1);
+        let v = stale_verdict(&c, WEEK).unwrap();
         assert_eq!(v.kind, VerdictKind::Ask);
         assert_eq!(v.source, Source::Hard);
         assert_eq!(v.reason, "idle for a long time");
         assert_eq!(v.score, None);
+    }
+
+    #[test]
+    fn idle_branch_with_recoverable_commits_is_preselected() {
+        let mut c = idle_for(Some(WEEK));
+        c.local_only_commit_count = Some(0);
+        let v = without_jev(&c, false, WEEK).unwrap();
+        assert_eq!(v.kind, VerdictKind::Delete);
+        assert_eq!(v.reason, "idle for a long time");
+    }
+
+    #[test]
+    fn idle_branch_with_unknown_remote_state_still_asks() {
+        let c = idle_for(Some(WEEK));
+        assert_eq!(without_jev(&c, false, WEEK).unwrap().kind, VerdictKind::Ask);
+    }
+
+    #[test]
+    fn idle_branch_with_live_upstream_still_asks() {
+        let mut c = idle_for(Some(WEEK));
+        c.local_only_commit_count = Some(0);
+        c.tracks_live_upstream = true;
+        assert_eq!(without_jev(&c, false, WEEK).unwrap().kind, VerdictKind::Ask);
+    }
+
+    #[test]
+    fn idle_branch_with_dirty_worktree_still_asks() {
+        let mut c = idle_for(Some(WEEK));
+        c.local_only_commit_count = Some(0);
+        c.worktree_dirty = true;
+        let v = without_jev(&c, false, WEEK).unwrap();
+        assert_eq!(v.kind, VerdictKind::Ask);
+        assert_eq!(
+            v.reason,
+            "idle for a long time; worktree has uncommitted changes"
+        );
     }
 
     #[test]

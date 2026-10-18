@@ -23,6 +23,39 @@ pub fn fetch(root: &Path) -> Result<()> {
 pub fn local_facts(root: &Path, config: &KaruConfig) -> Result<CollectResult> {
     let started = Instant::now();
     let mut collected = collect_from_git(root.to_path_buf(), config)?;
+    let worktrees: Vec<String> = collected
+        .candidates
+        .iter()
+        .filter_map(|candidate| candidate.worktree_path.clone())
+        .collect();
+    let worktree_paths: Vec<&str> = worktrees.iter().map(String::as_str).collect();
+    if collected
+        .candidates
+        .iter()
+        .any(decide::dirty_can_change_verdict)
+        || collected.candidates.iter().any(|candidate| {
+            candidate.branch.as_deref().is_some_and(|branch| {
+                worktree_paths.iter().any(|path| {
+                    Path::new(path)
+                        .file_name()
+                        .is_some_and(|name| name == branch)
+                })
+            })
+        })
+    {
+        let agents = crate::agents::ActiveAgents::inspect();
+        for candidate in &mut collected.candidates {
+            candidate.agent_check_available = agents.is_available();
+            candidate.active_agent = candidate
+                .worktree_path
+                .as_deref()
+                .is_some_and(|path| agents.uses(Path::new(path)))
+                || candidate
+                    .branch
+                    .as_deref()
+                    .is_some_and(|branch| agents.uses_branch(branch, &worktree_paths));
+        }
+    }
     collected.read_remote_facts()?;
     timing::report("  local facts", started);
     Ok(collected)
@@ -73,7 +106,7 @@ impl CollectResult {
     /// looks like, so its (slow) `git status` is skipped.
     pub fn mark_dirty_worktrees(&mut self) {
         let started = Instant::now();
-        mark_dirty_worktrees(&mut self.candidates);
+        mark_dirty_worktrees(&mut self.candidates, &self.default_branch);
         timing::report("  dirty checks", started);
     }
 
@@ -190,6 +223,9 @@ fn collect_from_git(root: PathBuf, config: &KaruConfig) -> Result<CollectResult>
             non_merge_unique_count: None,
             diffstat: None,
             worktree_dirty: false,
+            worktree_matches_default: false,
+            active_agent: false,
+            agent_check_available: true,
             upstream_gone: false,
             tracks_live_upstream: false,
             merged,
@@ -228,22 +264,32 @@ fn collect_from_git(root: PathBuf, config: &KaruConfig) -> Result<CollectResult>
 
 /// Runs `git status` only for worktrees whose verdict it can change; on a
 /// large repository this check dominates the collection time.
-fn mark_dirty_worktrees(candidates: &mut [Candidate]) {
+fn mark_dirty_worktrees(candidates: &mut [Candidate], default_branch: &str) {
+    let reference = format!("refs/heads/{default_branch}");
     let paths: Vec<(usize, String)> = candidates
         .iter()
         .enumerate()
         .filter(|(_, c)| decide::dirty_can_change_verdict(c))
         .filter_map(|(i, c)| c.worktree_path.clone().map(|path| (i, path)))
         .collect();
-    let dirty: Vec<(usize, bool)> = std::thread::scope(|s| {
+    let dirty: Vec<(usize, bool, bool)> = std::thread::scope(|s| {
         let handles: Vec<_> = paths
             .iter()
-            .map(|(i, path)| s.spawn(move || (*i, git::is_dirty(Path::new(path)))))
+            .map(|(i, path)| {
+                let reference = &reference;
+                s.spawn(move || {
+                    let path = Path::new(path);
+                    let dirty = git::is_dirty(path);
+                    let matches_default = dirty && git::worktree_matches_ref(path, reference);
+                    (*i, dirty, matches_default)
+                })
+            })
             .collect();
         handles.into_iter().filter_map(|h| h.join().ok()).collect()
     });
-    for (i, is_dirty) in dirty {
+    for (i, is_dirty, matches_default) in dirty {
         candidates[i].worktree_dirty = is_dirty;
+        candidates[i].worktree_matches_default = matches_default;
     }
 }
 
@@ -365,6 +411,9 @@ fn detached_candidate(
         non_merge_unique_count: None,
         diffstat: None,
         worktree_dirty: false,
+        worktree_matches_default: false,
+        active_agent: false,
+        agent_check_available: true,
         upstream_gone: false,
         tracks_live_upstream: false,
         merged: false,

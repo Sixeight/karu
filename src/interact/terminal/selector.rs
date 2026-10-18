@@ -33,6 +33,7 @@ struct ColumnSpec {
 
 struct Layout {
     columns: Vec<ColumnSpec>,
+    width: usize,
 }
 
 impl Layout {
@@ -93,7 +94,10 @@ impl Layout {
                 .max(flex_width.saturating_sub(columns[first].width));
         }
 
-        Self { columns }
+        Self {
+            columns,
+            width: cols.saturating_sub(1),
+        }
     }
 
     fn render_row(&self, item: &Judged, checked: bool, cursor: bool, color: bool) -> String {
@@ -129,7 +133,15 @@ impl Layout {
                 line.push_str(&" ".repeat(padding));
             }
         }
-        line
+        if cursor && color {
+            let mut line = truncate_str(&line, self.width, "…").into_owned();
+            line.push_str(&" ".repeat(self.width.saturating_sub(measure_text_width(&line))));
+            let background = "\x1b[48;5;236m";
+            let line = line.replace("\x1b[0m", &format!("\x1b[0m{background}"));
+            format!("{background}{line}\x1b[0m")
+        } else {
+            line
+        }
     }
 
     fn render_header(&self, color: bool) -> String {
@@ -449,4 +461,59 @@ pub(super) fn select_candidates(
         };
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::candidate::{Verdict, fixtures};
+    use crate::reason::Reason;
+
+    #[test]
+    fn cursor_background_covers_every_cell_and_resets_after_the_row() {
+        let item = Judged {
+            candidate: fixtures::candidate(),
+            verdict: Verdict {
+                kind: VerdictKind::Ask,
+                source: crate::candidate::Source::Hard,
+                reason: Reason::NoClearReasonToKeep,
+                score: None,
+            },
+        };
+        for width in [40, 80, 120, 200] {
+            for checked in [false, true] {
+                let layout = Layout::new(width);
+                let row = layout.render_row(&item, checked, true, true);
+                let mut background = false;
+                let mut rest = row.as_str();
+                while !rest.is_empty() {
+                    if let Some(sgr) = rest.strip_prefix("\x1b[") {
+                        let (code, tail) = sgr.split_once('m').unwrap();
+                        match code {
+                            "0" => background = false,
+                            "48;5;236" => background = true,
+                            _ => {}
+                        }
+                        rest = tail;
+                    } else {
+                        assert!(background, "cell without background at width {width}");
+                        let ch = rest.chars().next().unwrap();
+                        rest = &rest[ch.len_utf8()..];
+                    }
+                }
+                assert!(!background, "background must not leak into the next row");
+                assert_eq!(measure_text_width(&row), width - 1);
+                assert!(
+                    !layout
+                        .render_row(&item, checked, false, true)
+                        .contains("48;")
+                );
+                assert!(
+                    !layout
+                        .render_row(&item, checked, true, false)
+                        .contains('\x1b')
+                );
+            }
+        }
+    }
 }

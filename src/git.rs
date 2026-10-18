@@ -436,6 +436,57 @@ pub fn is_dirty(dir: &Path) -> bool {
         .unwrap_or(true)
 }
 
+/// True only when working files match `reference` and the index adds no
+/// content beyond HEAD or that reference. Untracked files and dirty submodules
+/// cannot be proved redundant this way.
+pub fn worktree_matches_ref(dir: &Path, reference: &str) -> bool {
+    let status = Command::new("git")
+        .args([
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ])
+        .current_dir(dir)
+        .output();
+    let Ok(status) = status else {
+        return false;
+    };
+    if !status.status.success()
+        || status
+            .stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .any(|line| {
+                line.len() < 2
+                    || line[0] == b'?'
+                    || line[1] == b'?'
+                    || line[0].is_ascii_lowercase()
+                    || line[1].is_ascii_lowercase()
+            })
+    {
+        return false;
+    }
+    let diff_matches = |target: &str, cached: bool| {
+        let mut diff = Command::new("git");
+        diff.args([
+            "diff",
+            "--quiet",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+        ]);
+        if cached {
+            diff.arg("--cached");
+        }
+        diff.args([target, "--"])
+            .current_dir(dir)
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    diff_matches(reference, false) && (diff_matches(reference, true) || diff_matches("HEAD", true))
+}
+
 /// karu's own settings, read with a single `git config` call.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct KaruConfig {

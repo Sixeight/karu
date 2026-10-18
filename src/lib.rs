@@ -1,3 +1,4 @@
+mod agents;
 pub mod apply;
 pub mod candidate;
 pub mod cli;
@@ -10,4 +11,5 @@ pub mod report;
 pub mod spinner;
 pub mod tidy;
 pub mod timing;
+mod trash;
 pub mod typesafe;
