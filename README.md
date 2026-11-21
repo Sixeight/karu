@@ -34,13 +34,13 @@ karu fetches from `origin`, checks local branches and worktrees, and gives each 
 
 | Verdict | Action |
 | --- | --- |
-| `delete` | Preselect in the interactive candidate list. |
-| `ask` | Leave unchecked in the interactive candidate list. |
+| `delete` | Recommend for deletion; included in the candidate list unless `--yes` is set. |
+| `ask` | Needs confirmation; included in the candidate list even with `--yes`. |
 | `keep` | Leave it alone. |
 
 The current branch is kept and hidden from the table. Other kept branches are counted below the candidate list; use `--show-kept` to include them in the list.
 Deletion starts after the selection is confirmed.
-In a terminal, `delete` items start selected and `ask` items start unchecked. Use the candidate list to change the selection and confirm all deletions together. It shows each item's reason, unpushed commits, and worktree; wider terminals also show unique commits and pull request details. `d`, `l`, and `s` open the diff, log, and worktree status for the current item. With `--yes`, `delete` items are already confirmed and the list contains only `ask` items.
+In a terminal, all items in the candidate list (`delete` and `ask`) start selected. Use the candidate list to uncheck items you want to keep and confirm all deletions together. It shows each item's reason, unpushed commits, and worktree; wider terminals also show unique commits and pull request details. `d`, `l`, and `s` open the diff, log, and worktree status for the current item. With `--yes`, `delete` items are already confirmed and the list contains only `ask` items.
 
 When the terminal cannot show the selector, karu keeps the group confirmation and asks about each `ask` item separately.
 
@@ -89,9 +89,9 @@ Other branches become deletion candidates when they diverged from the default br
 Review checkouts from a finished pull request can also qualify when all unique commits exist on fetched refs and the branch has no live upstream.
 A matching file tree alone does not prove that a branch was merged.
 
-Branches still undecided after these checks become candidates after seven idle days. If they have no commits found only locally and no live upstream, they are preselected as `delete`; otherwise they get an unchecked `ask` verdict. An unknown commit count also stays `ask`.
+Branches still undecided after these checks become candidates after seven idle days. If they have no commits found only locally and no live upstream, they get a `delete` verdict; otherwise they get an `ask` verdict. An unknown commit count also stays `ask`.
 Idle time measures when the local branch ref last moved, using the reflog.
-Without `--force`, deletion recommendations for dirty worktrees become unchecked `ask` items, except when the tracked working files match the default branch, the index matches either `HEAD` or the default branch, and there are no untracked files. In that case the item stays preselected as `delete`; karu checks again before removal. Select other dirty items in the candidate list to confirm deletion, or confirm them individually when karu uses line prompts.
+Without `--force`, deletion recommendations for dirty worktrees become `ask` items, except when the tracked working files match the default branch, the index matches either `HEAD` or the default branch, and there are no untracked files. In that case the item stays `delete`; karu checks again before removal. Confirm other dirty items in the candidate list (or uncheck them to keep), or confirm them individually when karu uses line prompts.
 Jev can assess the remaining items when enabled; otherwise they are kept.
 
 If the current branch has no commits, karu exits without fetching or deleting branches.
