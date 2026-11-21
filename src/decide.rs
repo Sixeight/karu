@@ -119,7 +119,7 @@ fn hard_rules(candidate: &Candidate) -> Option<Verdict> {
 pub const STALE_AFTER_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Runs after `hard_verdict` found nothing. Idle branches without local-only
-/// commits or a live upstream can be preselected; the rest need confirmation.
+/// commits or a live upstream get `Delete`; the rest get `Ask`.
 fn stale_verdict(candidate: &Candidate, stale_after_secs: u64) -> Option<Verdict> {
     let idle = candidate.ref_age_secs?;
     if idle < stale_after_secs {

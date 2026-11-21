@@ -408,13 +408,8 @@ fn matching_indices(items: &[&Judged], query: &str) -> Vec<usize> {
         .collect()
 }
 
-pub(super) fn select_candidates(
-    root: &Path,
-    default_branch: &str,
-    judged: &mut [Judged],
-    include_recommendations: bool,
-) -> Result<()> {
-    let indices: Vec<usize> = judged
+fn candidate_indices(judged: &[Judged], include_recommendations: bool) -> Vec<usize> {
+    judged
         .iter()
         .enumerate()
         .filter_map(|(index, item)| {
@@ -422,16 +417,26 @@ pub(super) fn select_candidates(
                 || (include_recommendations && item.verdict.kind == VerdictKind::Delete))
                 .then_some(index)
         })
-        .collect();
+        .collect()
+}
+
+fn initial_checked(items: &[&Judged]) -> Vec<bool> {
+    vec![true; items.len()]
+}
+
+pub(super) fn select_candidates(
+    root: &Path,
+    default_branch: &str,
+    judged: &mut [Judged],
+    include_recommendations: bool,
+) -> Result<()> {
+    let indices = candidate_indices(judged, include_recommendations);
     if indices.is_empty() {
         return Ok(());
     }
 
     let items: Vec<&Judged> = indices.iter().map(|&index| &judged[index]).collect();
-    let mut checked: Vec<bool> = items
-        .iter()
-        .map(|item| item.verdict.kind == VerdictKind::Delete)
-        .collect();
+    let mut checked = initial_checked(&items);
     let mut cursor = items.len();
     let mut search = Search::default();
     let color = console::colors_enabled_stderr();
@@ -608,6 +613,37 @@ mod tests {
         }
         assert_eq!(move_cursor(Key::Char('k'), 5, 5), 4);
         assert_eq!(move_cursor(Key::Char('j'), 5, 5), 5);
+    }
+
+    #[test]
+    fn all_selector_candidates_start_selected() {
+        let make = |kind| Judged {
+            candidate: fixtures::candidate(),
+            verdict: Verdict {
+                kind,
+                source: crate::candidate::Source::Hard,
+                reason: Reason::NoClearReasonToKeep,
+                score: None,
+            },
+        };
+        let judged = [
+            make(VerdictKind::Delete),
+            make(VerdictKind::Ask),
+            make(VerdictKind::Keep),
+        ];
+
+        let all_indices = candidate_indices(&judged, true);
+        assert_eq!(all_indices, vec![0, 1]);
+        let all_items: Vec<&Judged> = all_indices.iter().map(|&index| &judged[index]).collect();
+        assert_eq!(initial_checked(&all_items), vec![true, true]);
+
+        let ask_only_indices = candidate_indices(&judged, false);
+        assert_eq!(ask_only_indices, vec![1]);
+        let ask_only_items: Vec<&Judged> = ask_only_indices
+            .iter()
+            .map(|&index| &judged[index])
+            .collect();
+        assert_eq!(initial_checked(&ask_only_items), vec![true]);
     }
 
     #[test]
